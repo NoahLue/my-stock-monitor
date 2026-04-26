@@ -14,6 +14,7 @@ def get_stock_name(code):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
+        res.encoding = 'utf-8'
         soup = BeautifulSoup(res.text, 'html.parser')
         title = soup.find('title').get_text()
         name = title.split('(')[0].strip()
@@ -59,7 +60,7 @@ def get_peicheng_index_data(symbol_short):
 
 # --- Streamlit 介面 ---
 st.title("🚀 2026 終極監控系統")
-st.markdown("### 【智慧 PE 校準】x【全自動中文辨識】監控儀表板")
+st.markdown("### 【智慧 PE/PB 校準】x【全自動中文辨識】監控儀表板")
 
 default_stocks = "2330.TW, 6789.TW, 8299.TWO, 2337.TW, 6147.TWO, 2401.TW, 8039.TW, 2485.TW, 2474.TW, 3217.TWO, 2476.TW"
 user_input = st.text_input("請輸入股票代號 (用英文逗號隔開)", default_stocks)
@@ -92,23 +93,38 @@ if st.button("開始全自動全方位診斷"):
             data = get_peicheng_index_data(symbol_short)
             if not data or data['eps'] is None: continue
 
-            # === 智慧 PE 與目標價校準邏輯 (解決采鈺 6789 問題) ===
-            dynamic_pe = round(curr_price / data['eps'], 2)
-            f_pe = ticker.info.get("forwardPE")
-            
-            # 優先參考法人預估，若無或數據離譜，則動態校準
-            if f_pe and 5 < f_pe < 80:
-                pred_pe = round(f_pe, 2)
-            else:
-                # 針對采鈺類的高 PE 成長股：若營收成長且 PE 很高，給予目前 PE 的 0.95 倍做參考
-                if dynamic_pe > 40:
-                    pred_pe = round(dynamic_pe * 0.95, 2)
-                elif data['rev_yoy'] > 20:
-                    pred_pe = 25.0
+            # === 智慧 PE 與目標價校準邏輯 (加入負值 PB 處理) ===
+            # 先處理動態 PE，避免除以 0
+            if data['eps'] > 0:
+                dynamic_pe = round(curr_price / data['eps'], 2)
+                f_pe = ticker.info.get("forwardPE")
+                
+                # 優先參考法人預估，若無或數據離譜，則動態校準
+                if f_pe and 5 < f_pe < 80:
+                    pred_pe = round(f_pe, 2)
                 else:
-                    pred_pe = 18.0
-
-            target_price = round(data['eps'] * pred_pe, 2)
+                    if dynamic_pe > 40:
+                        pred_pe = round(dynamic_pe * 0.95, 2)
+                    elif data['rev_yoy'] > 20:
+                        pred_pe = 25.0
+                    else:
+                        pred_pe = 18.0
+                
+                target_price = round(data['eps'] * pred_pe, 2)
+                pe_pb_label = pred_pe
+            else:
+                # 虧損轉機股邏輯 (凌陽適用)：改用 P/B 比推算
+                dynamic_pe = "虧損"
+                book_value = ticker.info.get('bookValue')
+                
+                if book_value and book_value > 0:
+                    # 營收成長給 1.5 倍，否則給 1.2 倍
+                    pb_multiplier = 1.5 if data['rev_yoy'] > 15 else 1.2
+                    target_price = round(book_value * pb_multiplier, 2)
+                    pe_pb_label = f"PB:{pb_multiplier}"
+                else:
+                    target_price = "需財報支持"
+                    pe_pb_label = "N/A"
 
             # === 抓鬼診斷 4.0 ===
             if drop_from_high < -20 and data['rev_yoy'] > 50: ghost_check = "⚠️重鬼(利多崩跌)"
@@ -130,7 +146,7 @@ if st.button("開始全自動全方位診斷"):
                 "高點回檔": f"{drop_from_high}%",
                 "累計年增": f"{data['rev_yoy']}%",
                 "動態PE": dynamic_pe,
-                "預估PE": pred_pe,
+                "預估PE/PB": pe_pb_label,
                 "推算目標": target_price,
                 "5日乖離": f"{bias_5}%",
                 "站上線": "🌕是" if is_all_up else "🌑否",
