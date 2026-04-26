@@ -55,7 +55,8 @@ def get_peicheng_index_data(symbol_short):
         return {"eps": eps, "rev_yoy": round(yoy_list[0] if yoy_list else 0, 2), "avg_3m_yoy": round(avg_3m_yoy, 2)}
     except: return None
 
-st.title("🚀 2026 終極監控系統（精準校準版）")
+st.title("🚀 2026 終極監控系統（實戰校準版）")
+
 default_stocks = "2330.TW, 8046.TW, 8299.TWO, 2337.TW"
 user_input = st.text_input("請輸入股票代號", default_stocks)
 
@@ -79,24 +80,38 @@ if st.button("啟動全自動趨勢診斷"):
         data = get_peicheng_index_data(symbol_short)
         if not data: continue
 
-        # === 核心估值邏輯修正 ===
-        book_value = ticker.info.get('bookValue', 0)
+        # === 核心估值邏輯優化 (解決南電見鬼問題) ===
+        # 1. 決定基礎 PE
+        f_pe = ticker.info.get("forwardPE", 0)
+        dynamic_pe = curr_price / data['eps'] if data['eps'] and data['eps'] > 0 else 0
         
-        if data['eps'] and data['eps'] > (curr_price / 100): # EPS 必須合理，不能太小
-            # 獲利股：動能 PE 模型
-            f_pe = ticker.info.get("forwardPE", 15)
-            factor = 1.2 if data['avg_3m_yoy'] > 30 else 1.0
-            pred_pe = min(max(f_pe * factor, 12), 35)
-            target_price = round(data['eps'] * pred_pe, 2)
-            pe_display = round(pred_pe, 1)
-        elif book_value > 0:
-            # 轉機/虧損股：PB 模型
-            pb_ratio = 1.8 if data['avg_3m_yoy'] > 20 else 1.4
+        # 2. 針對高價轉機股的「防禦性目標價」
+        # 如果推算目標價遠低於現價(例如低於 50%)，代表 EPS 數據落後，改用「動能定價」
+        if data['eps'] and data['eps'] > 0:
+            base_pe = f_pe if f_pe > 0 else dynamic_pe
+            momentum_factor = 1.1 if data['avg_3m_yoy'] > 30 else 1.0
+            raw_target = data['eps'] * base_pe * momentum_factor
+            
+            # 關鍵修正：目標價保護
+            if raw_target < curr_price * 0.7:
+                target_price = round(curr_price * 1.15, 2) # 給予合理的波段期待
+                pe_display = f"{round(base_pe, 1)}(動能)"
+            else:
+                target_price = round(raw_target, 2)
+                pe_pb_label = round(base_pe, 1)
+                pe_display = pe_pb_label
+        else:
+            # 虧損股改用淨值比
+            book_value = ticker.info.get('bookValue', 0)
+            pb_ratio = 2.0 if data['avg_3m_yoy'] > 20 else 1.5
             target_price = round(book_value * pb_ratio, 2)
             pe_display = f"PB:{pb_ratio}"
-        else:
-            target_price = round(curr_price * 1.1, 2)
-            pe_display = "N/A"
+
+        # === 成功率校準：目標價低於現價，成功率強制扣分 ===
+        score = (85 if data['avg_3m_yoy'] > 20 else 60) + (10 if is_all_up else 0)
+        if isinstance(target_price, (int, float)) and target_price < curr_price:
+            score -= 30 # 目標價都不到現價，成功率不可能高
+        success_rate = max(min(score, 95), 10)
 
         # 位階判定
         if drop_from_high < -20: level = "🆘超跌"
@@ -112,7 +127,7 @@ if st.button("啟動全自動趨勢診斷"):
             "預估PE/PB": pe_display,
             "推算目標": target_price,
             "站上線": "是" if is_all_up else "否",
-            "成功率": f"{(85 if data['avg_3m_yoy']>20 else 60) + (10 if is_all_up else 0)}%",
+            "成功率": f"{success_rate}%",
             "位階": level
         })
 
