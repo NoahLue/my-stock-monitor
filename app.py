@@ -3,11 +3,28 @@ import yfinance as yf
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+import re
 
 # 設定網頁標題與寬版顯示
 st.set_page_config(page_title="2026 終極監控系統", layout="wide")
 
-# --- 保留所有原始函數，完全不刪減 ---
+# --- 自動抓取台股中文名稱的函數 ---
+def get_stock_name(code):
+    symbol = code.split('.')[0]
+    # 爬取 Yahoo 股市頁面
+    url = f"https://tw.stock.yahoo.com/quote/{symbol}"
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        # 從網頁標題抓取名稱，通常格式是 "台積電 (2330) - 股票價格"
+        title = soup.find('title').get_text()
+        name = title.split('(')[0].strip()
+        return name if name else symbol
+    except:
+        return symbol
+
+# --- 核心邏輯函數 (保留原始邏輯) ---
 def safe_float(text):
     try:
         return float(text.replace('%', '').replace(',', '').strip())
@@ -18,11 +35,9 @@ def get_forward_pe(ticker):
     try:
         info = ticker.info
         pe = info.get("forwardPE")
-        if pe and pe > 0:
-            return pe
+        return pe if pe and pe > 0 else None
     except:
-        pass
-    return None
+        return None
 
 def get_peicheng_index_data(symbol_short):
     url = f"http://www.peicheng.com.tw/asp/stockquery/{symbol_short}.htm"
@@ -58,49 +73,44 @@ def get_peicheng_index_data(symbol_short):
 
 # --- Streamlit 介面佈置 ---
 st.title("🚀 2026 終極監控系統")
-st.markdown("### 【回檔深度】與【波段防護】偵測儀表板")
+st.markdown("### 【動態全自動】中文名稱與波段診斷")
 
-# 1. 標的設定 (改為網頁輸入，預設填入你原本的清單)
+# 預設清單
 default_stocks = "2330.TW, 8299.TWO, 2337.TW, 6147.TWO, 2401.TW, 8039.TW, 2485.TW, 2474.TW, 3217.TWO, 2476.TW"
-user_input = st.text_input("請輸入股票代號 (用英文逗號隔開)", default_stocks)
+user_input = st.text_input("請輸入股票代號 (如: 2317.TW, 2603.TW)", default_stocks)
 
 if st.button("開始全自動診斷"):
-    # 將輸入轉為串列
     stock_list = [s.strip().upper() for s in user_input.split(",")]
     results = []
     
-    with st.spinner('偵測中...'):
+    with st.spinner('正在自動辨識中文名稱與計算指標...'):
         for code in stock_list:
             symbol_short = code.split('.')[0]
             ticker = yf.Ticker(code)
             
-            # 抓取較長天數確保 MA60 與 波段高點準確 (保留 120d)
+            # --- 自動抓取中文名稱 ---
+            stock_name = get_stock_name(code)
+
             hist = ticker.history(period="120d")
             if hist.empty:
                 continue
 
             curr_price = round(hist['Close'].iloc[-1], 2)
-            
-            # === 高點回檔 Debug (完全保留) ===
             period_high = round(hist['High'].max(), 2)
             drop_from_high = round(((curr_price - period_high) / period_high) * 100, 2)
             
-            # === 技術指標 Debug (完全保留) ===
             ma5 = round(hist['Close'].rolling(5).mean().iloc[-1], 2)
             ma10 = round(hist['Close'].rolling(10).mean().iloc[-1], 2)
             ma20 = round(hist['Close'].rolling(20).mean().iloc[-1], 2)
             ma60 = round(hist['Close'].rolling(60).mean().iloc[-1], 2)
             
-            # 站上所有線
             is_all_up = curr_price > ma5 > ma10 > ma20 > ma60
-            # 5日乖離率
             bias_5 = round(((curr_price - ma5) / ma5) * 100, 2)
             
             data = get_peicheng_index_data(symbol_short)
             if not data or data['eps'] is None:
                 continue
 
-            # === 計算 PE 與 目標價 (完全保留原始邏輯) ===
             forward_pe = get_forward_pe(ticker)
             if data['eps'] > 0:
                 p_pe = forward_pe if forward_pe else curr_price / data['eps']
@@ -114,32 +124,22 @@ if st.button("開始全自動診斷"):
                 target_price = "待轉盈"
                 dynamic_pe = "負數"
 
-            # === 抓鬼診斷 4.0 (完整保留整合邏輯) ===
-            if drop_from_high < -20 and data['rev_yoy'] > 50:
-                ghost_check = "⚠️重鬼(利多崩跌)"
-            elif bias_5 > 10:
-                ghost_check = "🧨超速(乖離過大)" 
-            elif drop_from_high > -5 and is_all_up:
-                ghost_check = "✅強勢(大戶鎖籌)"
-            elif data['rev_yoy'] < 10 and curr_price > ma20 and (isinstance(pred_pe, (int, float)) and pred_pe > 30):
-                ghost_check = "⚠️虛火(沒賺亂漲)"
-            elif is_all_up and data['rev_yoy'] > 20:
-                ghost_check = "✅沒鬼(多頭發動)"
-            else:
-                ghost_check = "正常"
+            # 抓鬼診斷 4.0
+            if drop_from_high < -20 and data['rev_yoy'] > 50: ghost_check = "⚠️重鬼(利多崩跌)"
+            elif bias_5 > 10: ghost_check = "🧨超速(乖離過大)" 
+            elif drop_from_high > -5 and is_all_up: ghost_check = "✅強勢(大戶鎖籌)"
+            elif data['rev_yoy'] < 10 and curr_price > ma20 and (isinstance(pred_pe, (int, float)) and pred_pe > 30): ghost_check = "⚠️虛火(沒賺亂漲)"
+            elif is_all_up and data['rev_yoy'] > 20: ghost_check = "✅沒鬼(多頭發動)"
+            else: ghost_check = "正常"
 
-            # 進化診斷 (完全保留原始邏輯)
-            if is_all_up and data['rev_yoy'] > 30:
-                diagnosis = "🔥全線啟動"
-            elif data['eps'] <= 0 and data['rev_yoy'] > 10:
-                diagnosis = "🚀轉機啟動"
-            elif curr_price < ma60 and data['rev_yoy'] > 100:
-                diagnosis = "💎明珠蒙塵"
-            else:
-                diagnosis = "觀察等待"
+            # 進化診斷
+            if is_all_up and data['rev_yoy'] > 30: diagnosis = "🔥全線啟動"
+            elif data['eps'] <= 0 and data['rev_yoy'] > 10: diagnosis = "🚀轉機啟動"
+            elif curr_price < ma60 and data['rev_yoy'] > 100: diagnosis = "💎明珠蒙塵"
+            else: diagnosis = "觀察等待"
 
             results.append({
-                "名稱": code,
+                "名稱": f"{stock_name} ({symbol_short})",
                 "最新價": curr_price,
                 "波段高點": period_high,
                 "高點回檔": f"{drop_from_high}%",
@@ -149,15 +149,9 @@ if st.button("開始全自動診斷"):
                 "推算目標": target_price,
                 "5日乖離": f"{bias_5}%",
                 "站上所有線": "🌕是" if is_all_up else "🌑否",
-                "成功率": f"{(80 if data['rev_yoy']>30 else 50) + (20 if is_all_up else 0)}%",
-                "位階": "偏強" if curr_price > ma20 else "超跌" if drop_from_high < -20 else "整理",
                 "進化診斷": diagnosis,
                 "有沒有鬼": ghost_check
             })
 
     if results:
-        # 轉換為 DataFrame 並以網頁表格呈現
-        df = pd.DataFrame(results)
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("請輸入代號並點擊按鈕開始分析。")
+        st.dataframe(pd.DataFrame(results), use_container_width=True)
