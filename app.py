@@ -39,7 +39,6 @@ def get_peicheng_index_data(symbol_short):
         eps = None
         yoy_list = []
 
-        # 抓EPS
         for td in soup.find_all('td'):
             if "機構估稅後EPS" in td.get_text():
                 val = td.find_next_sibling('td')
@@ -47,7 +46,6 @@ def get_peicheng_index_data(symbol_short):
                     eps = safe_float(val.get_text())
                 break
 
-        # 抓YoY
         rows = soup.find_all('tr')
         found = False
         yoy_col_idx = -1
@@ -68,20 +66,14 @@ def get_peicheng_index_data(symbol_short):
                 if val is not None:
                     yoy_list.append(val)
 
-            if len(yoy_list) >= 6:
+            if len(yoy_list) >= 3:
                 break
-
-        # 👉 修正：只取最新3筆
-        yoy_list = yoy_list[:3]
 
         avg_3m_yoy = sum(yoy_list) / len(yoy_list) if yoy_list else 0
 
-        # 👉 修正：累計用平均（不要用單月）
-        rev_yoy = avg_3m_yoy
-
         return {
             "eps": eps,
-            "rev_yoy": round(rev_yoy, 2),
+            "rev_yoy": round(avg_3m_yoy, 2),
             "avg_3m_yoy": round(avg_3m_yoy, 2)
         }
 
@@ -99,8 +91,8 @@ def get_forward_pe(ticker):
 
 
 # --- UI ---
-st.title("🚀 2026 終極監控系統")
-st.markdown("### 【動態位階校準】x【智慧趨勢監控】")
+st.title("🚀 2026 終極監控系統（進化版）")
+st.markdown("### 【估值模型自動切換】x【趨勢監控】")
 
 default_stocks = "2330.TW, 8299.TWO, 2337.TW, 6147.TWO, 2401.TW, 8039.TW, 2485.TW, 2474.TW, 3217.TWO, 2476.TW"
 user_input = st.text_input("請輸入股票代號", default_stocks)
@@ -138,10 +130,8 @@ if st.button("啟動全自動趨勢診斷"):
             if not data or data['eps'] is None:
                 continue
 
-            # ===== 目標價（修正版）=====
             forward_pe = get_forward_pe(ticker)
-
-            dynamic_pe = curr_price / data['eps'] if data['eps'] > 0 else 10
+            dynamic_pe = curr_price / data['eps'] if data['eps'] and data['eps'] > 0 else 15
             base_pe = forward_pe if forward_pe else dynamic_pe
 
             # 動能調整
@@ -157,17 +147,26 @@ if st.button("啟動全自動趨勢診斷"):
                 factor = 1.0
 
             pred_pe = min(max(base_pe * factor, 8), 40)
-            calc_target = data['eps'] * pred_pe
 
-            # 趨勢校準
-            if is_all_up:
+            # ===== ⭐估值模型切換（核心）=====
+            if data['eps'] > 0:
+                calc_target = data['eps'] * pred_pe
                 target_price = round(calc_target, 2)
-            elif calc_target > curr_price * 1.5:
+
+            elif data['avg_3m_yoy'] > 20:
+                # 成長股（虧損但爆發）
                 target_price = round(curr_price * 1.3, 2)
-            else:
-                target_price = round(calc_target, 2)
 
-            # ===== 成功率（評分制）=====
+            elif data['avg_3m_yoy'] > 0:
+                # 轉機股
+                future_eps = max(data['eps'] * (1 + data['avg_3m_yoy']/100), 0.5)
+                target_price = round(future_eps * pred_pe, 2)
+
+            else:
+                # 弱勢股
+                target_price = round(curr_price * 0.9, 2)
+
+            # ===== 成功率 =====
             score = 0
 
             if data['rev_yoy'] > 30:
