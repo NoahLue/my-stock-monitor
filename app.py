@@ -3,39 +3,28 @@ import yfinance as yf
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import re
 
 # 設定網頁標題與寬版顯示
 st.set_page_config(page_title="2026 終極監控系統", layout="wide")
 
-# --- 自動抓取台股中文名稱的函數 ---
+# --- 1. 自動抓取台股中文名稱 ---
 def get_stock_name(code):
     symbol = code.split('.')[0]
-    # 爬取 Yahoo 股市頁面
     url = f"https://tw.stock.yahoo.com/quote/{symbol}"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
-        # 從網頁標題抓取名稱，通常格式是 "台積電 (2330) - 股票價格"
         title = soup.find('title').get_text()
         name = title.split('(')[0].strip()
         return name if name else symbol
     except:
         return symbol
 
-# --- 核心邏輯函數 (保留原始邏輯) ---
+# --- 2. 核心邏輯函數 ---
 def safe_float(text):
     try:
         return float(text.replace('%', '').replace(',', '').strip())
-    except:
-        return None
-
-def get_forward_pe(ticker):
-    try:
-        info = ticker.info
-        pe = info.get("forwardPE")
-        return pe if pe and pe > 0 else None
     except:
         return None
 
@@ -45,7 +34,7 @@ def get_peicheng_index_data(symbol_short):
         res = requests.get(url, timeout=10)
         res.encoding = 'big5'
         soup = BeautifulSoup(res.text, 'html.parser')
-        eps, monthly_yoy, rev_yoy = None, None, None
+        eps, rev_yoy = None, 0
         rows = soup.find_all('tr')
         header_map, found_header = {}, False
         for row in rows:
@@ -53,86 +42,82 @@ def get_peicheng_index_data(symbol_short):
             texts = [c.get_text(strip=True) for c in cells]
             if not found_header and any("YoY" in t for t in texts):
                 for i, t in enumerate(texts):
-                    if "單月YoY" in t: header_map["monthly"] = i
                     if "累計YoY" in t: header_map["acc"] = i
                 found_header = True
                 continue
-            if found_header and len(texts) > 0:
-                if texts[0].isdigit():
-                    if "monthly" in header_map: monthly_yoy = safe_float(texts[header_map["monthly"]])
-                    if "acc" in header_map: rev_yoy = safe_float(texts[header_map["acc"]])
-                    break
+            if found_header and len(texts) > 0 and texts[0].isdigit():
+                if "acc" in header_map: rev_yoy = safe_float(texts[header_map["acc"]])
+                break
         for td in soup.find_all('td'):
             if "機構估稅後EPS" in td.get_text():
                 val = td.find_next_sibling('td')
                 if val: eps = safe_float(val.get_text())
                 break
-        return {"eps": eps, "monthly_yoy": monthly_yoy or 0, "rev_yoy": rev_yoy or 0}
+        return {"eps": eps, "rev_yoy": rev_yoy or 0}
     except:
         return None
 
-# --- Streamlit 介面佈置 ---
+# --- Streamlit 介面 ---
 st.title("🚀 2026 終極監控系統")
-st.markdown("### 【動態全自動】中文名稱與波段診斷")
+st.markdown("### 【智慧 PE 校準】x【全自動中文辨識】監控儀表板")
 
-# 預設清單
-default_stocks = "2330.TW, 8299.TWO, 2337.TW, 6147.TWO, 2401.TW, 8039.TW, 2485.TW, 2474.TW, 3217.TWO, 2476.TW"
-user_input = st.text_input("請輸入股票代號 (如: 2317.TW, 2603.TW)", default_stocks)
+default_stocks = "2330.TW, 6789.TW, 8299.TWO, 2337.TW, 6147.TWO, 2401.TW, 8039.TW, 2485.TW, 2474.TW, 3217.TWO, 2476.TW"
+user_input = st.text_input("請輸入股票代號 (用英文逗號隔開)", default_stocks)
 
-if st.button("開始全自動診斷"):
+if st.button("開始全自動全方位診斷"):
     stock_list = [s.strip().upper() for s in user_input.split(",")]
     results = []
     
-    with st.spinner('正在自動辨識中文名稱與計算指標...'):
+    with st.spinner('正在分析標的動能與校準模型...'):
         for code in stock_list:
             symbol_short = code.split('.')[0]
             ticker = yf.Ticker(code)
-            
-            # --- 自動抓取中文名稱 ---
             stock_name = get_stock_name(code)
-
+            
             hist = ticker.history(period="120d")
-            if hist.empty:
-                continue
+            if hist.empty: continue
 
             curr_price = round(hist['Close'].iloc[-1], 2)
             period_high = round(hist['High'].max(), 2)
             drop_from_high = round(((curr_price - period_high) / period_high) * 100, 2)
             
+            # 技術指標 (完全保留 MA5/10/20/60)
             ma5 = round(hist['Close'].rolling(5).mean().iloc[-1], 2)
             ma10 = round(hist['Close'].rolling(10).mean().iloc[-1], 2)
             ma20 = round(hist['Close'].rolling(20).mean().iloc[-1], 2)
             ma60 = round(hist['Close'].rolling(60).mean().iloc[-1], 2)
-            
             is_all_up = curr_price > ma5 > ma10 > ma20 > ma60
             bias_5 = round(((curr_price - ma5) / ma5) * 100, 2)
             
             data = get_peicheng_index_data(symbol_short)
-            if not data or data['eps'] is None:
-                continue
+            if not data or data['eps'] is None: continue
 
-            forward_pe = get_forward_pe(ticker)
-            if data['eps'] > 0:
-                p_pe = forward_pe if forward_pe else curr_price / data['eps']
-                if p_pe > 80: p_pe = 40
-                elif p_pe < 5: p_pe = 10
-                target_price = round(data['eps'] * p_pe, 2)
-                dynamic_pe = round(curr_price / data['eps'], 2)
-                pred_pe = round(p_pe, 2)
+            # === 智慧 PE 與目標價校準邏輯 (解決采鈺 6789 問題) ===
+            dynamic_pe = round(curr_price / data['eps'], 2)
+            f_pe = ticker.info.get("forwardPE")
+            
+            # 優先參考法人預估，若無或數據離譜，則動態校準
+            if f_pe and 5 < f_pe < 80:
+                pred_pe = round(f_pe, 2)
             else:
-                pred_pe = round(forward_pe, 2) if forward_pe else 0
-                target_price = "待轉盈"
-                dynamic_pe = "負數"
+                # 針對采鈺類的高 PE 成長股：若營收成長且 PE 很高，給予目前 PE 的 0.95 倍做參考
+                if dynamic_pe > 40:
+                    pred_pe = round(dynamic_pe * 0.95, 2)
+                elif data['rev_yoy'] > 20:
+                    pred_pe = 25.0
+                else:
+                    pred_pe = 18.0
 
-            # 抓鬼診斷 4.0
+            target_price = round(data['eps'] * pred_pe, 2)
+
+            # === 抓鬼診斷 4.0 ===
             if drop_from_high < -20 and data['rev_yoy'] > 50: ghost_check = "⚠️重鬼(利多崩跌)"
             elif bias_5 > 10: ghost_check = "🧨超速(乖離過大)" 
             elif drop_from_high > -5 and is_all_up: ghost_check = "✅強勢(大戶鎖籌)"
-            elif data['rev_yoy'] < 10 and curr_price > ma20 and (isinstance(pred_pe, (int, float)) and pred_pe > 30): ghost_check = "⚠️虛火(沒賺亂漲)"
             elif is_all_up and data['rev_yoy'] > 20: ghost_check = "✅沒鬼(多頭發動)"
             else: ghost_check = "正常"
 
-            # 進化診斷
+            # === 進化診斷 ===
             if is_all_up and data['rev_yoy'] > 30: diagnosis = "🔥全線啟動"
             elif data['eps'] <= 0 and data['rev_yoy'] > 10: diagnosis = "🚀轉機啟動"
             elif curr_price < ma60 and data['rev_yoy'] > 100: diagnosis = "💎明珠蒙塵"
@@ -148,7 +133,7 @@ if st.button("開始全自動診斷"):
                 "預估PE": pred_pe,
                 "推算目標": target_price,
                 "5日乖離": f"{bias_5}%",
-                "站上所有線": "🌕是" if is_all_up else "🌑否",
+                "站上線": "🌕是" if is_all_up else "🌑否",
                 "進化診斷": diagnosis,
                 "有沒有鬼": ghost_check
             })
